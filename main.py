@@ -2,27 +2,33 @@ import argparse
 
 from modules.data.dataloader import CNNDailyMailDataset, BatchDataLoader
 from modules.data.vocab import Vocab
-from modules.models.simple_rnn import SimpleRNN
-from modules.reinforce.reward import ReinforceReward
-from modules.reinforce.rouge import reinforce_loss
+from modules.models.HER import HERExtractor
+
+from modules.reinforce.reward import SummarizationReward, ReinforceLoss
+from modules.reinforce.rouge import RougeScore
 
 
 from torch.autograd import Variable
 import torch
-from torch.utils.data import DataLoader
 import tqdm
 import numpy as np
 import logging
 from typing import Any
 import pandas as pd
+import datetime as dt
+import os
+import yaml
+import json
+
+from utils.config import Configs, ModelConfig
+
+logging.getLogger('global').disabled = True
 
 
-def eval_model(extractor: torch.nn.Module,
-               dataloader: BatchDataLoader,
-               eval_data: str = "test",
-               std_rouge: bool = False,
-               length_limit: int = -1,
-               rouge_metric="all"):
+def eval_extractor(extractor: torch.nn.Module,
+                   dataloader: BatchDataLoader,
+                   configs: Configs,
+                   eval_data: str = "test",):
     extractor.eval()
     # eval_reward, lead3_reward = evaluate.ext_model_eval(
     #     extractor, vocab, args, "val")
@@ -32,45 +38,64 @@ def eval_model(extractor: torch.nn.Module,
     messsage = '[Eval] - Mean reward %.4f Lead3  %.4f'
     eval_rewards, lead3_rewards = [], []
     step_in_epoch = 0
+
+#
     for step, batch_data in progress_bar:
         for doc in batch_data:
             try:
                 # if True:
                 step_in_epoch += 1
-                # for i in range(1):  # how many times a single data gets updated before proceeding
-                if args.oracle_length == -1:  # use true oracle length
-                    oracle_summary_sent_num = len(doc.tokenized_summary)
-                else:
-                    oracle_summary_sent_num = args.oracle_length
-
-                x = doc.tokenized_content
-                if min(x.shape) == 0:
+                if len(doc.sentences) == 0 or len(doc.tokenized_summary) == 0:
                     continue
-                sents = Variable(torch.from_numpy(x)).cuda()
-                outputs = extractor(sents)
-                compute_score = (step == len(dataloader.dataset) -
-                                 1) or (std_rouge is False)
-                if eval_data == "test":
-                    reward, lead3_r = reinforce_loss(outputs, doc, id=doc.id,
-                                                     max_num_of_sents=oracle_summary_sent_num,
-                                                     max_num_of_bytes=length_limit,
-                                                     std_rouge=std_rouge,
-                                                     rouge_metric="all",
-                                                     compute_score=compute_score)
+
+                if len(doc.sentences) < max(configs.model.kernel_sizes):
+                    summary_index_list = range(min(len(doc.sentences), 3))
+                    reward = RougeScore.from_summary_index_and_compute_rouge(doc, summary_index_list,
+                                                                             std_rouge=configs.reinforce.std_rouge,
+                                                                             rouge_metric=configs.reinforce.rouge_metric,
+                                                                             max_num_of_bytes=configs.reinforce.length_limit)
+                    lead3_r = reward
                 else:
-                    reward, lead3_r = reinforce_loss(outputs, doc, id=doc.id,
-                                                     max_num_of_sents=oracle_summary_sent_num,
-                                                     max_num_of_bytes=length_limit,
-                                                     std_rouge=std_rouge,
-                                                     rouge_metric=rouge_metric,
-                                                     compute_score=compute_score)
+                    # for i in range(1):  # how many times a single data gets updated before proceeding
+                    if configs.reinforce.oracle_length == -1:  # use true oracle length
+                        oracle_summary_sent_num = len(doc.tokenized_summary)
+                    else:
+                        oracle_summary_sent_num = configs.reinforce.oracle_length
+
+                    x = doc.tokenized_content
+                    if min(x.shape) == 0:
+                        continue
+                    sents = Variable(torch.from_numpy(x)).cuda()
+                    outputs = extractor(sents)
+                    compute_score = (step == len(dataloader.dataset) -
+                                     1) or (configs.reinforce.std_rouge is False)
+                    if eval_data == "test":
+                        reward, lead3_r = ReinforceLoss.get(probs=outputs,
+                                                            doc=doc,
+                                                            rouge_metric="all",
+                                                            max_num_of_sents=oracle_summary_sent_num,
+                                                            max_num_of_bytes=configs.reinforce.length_limit,
+                                                            std_rouge=configs.reinforce.std_rouge,
+                                                            path=configs.result_path,
+                                                            score_flag=compute_score,
+                                                            test=True)
+                    else:
+                        reward, lead3_r = ReinforceLoss.get(probs=outputs,
+                                                            doc=doc,
+                                                            rouge_metric=configs.reinforce.rouge_metric,
+                                                            max_num_of_sents=oracle_summary_sent_num,
+                                                            max_num_of_bytes=configs.reinforce.length_limit,
+                                                            std_rouge=configs.reinforce.std_rouge,
+                                                            score_flag=compute_score,
+                                                            path=configs.result_path)
 
                 eval_rewards.append(reward)
                 lead3_rewards.append(lead3_r)
                 progress_bar.set_description(messsage % (
                     np.mean(eval_rewards), np.mean(lead3_rewards)))
             except Exception as e:
-                print(f"Erro when training {e}")
+                logging.error(f"Error when eval {e}")
+
     avg_eval_r = np.mean(eval_rewards, axis=0)
     avg_lead3_r = np.mean(lead3_rewards, axis=0)
     # print('epoch ' + str(epoch) + ' reward in validation: '
@@ -78,86 +103,33 @@ def eval_model(extractor: torch.nn.Module,
     return avg_eval_r, avg_lead3_r
 
 
-def summarizer_train(args):
-    vocab = Vocab(vocab_file_path="data/vocab",
-                  glove_file_path="data/vocab_100d.txt",
-                  embedding_size=100)
+def train_extractor(extractor: torch.nn.Module,
+                    train_dataloader: BatchDataLoader,
+                    val_dataloader: BatchDataLoader,
+                    configs: Configs,
+                    device: str = "cuda"):
 
-    df_train = pd.read_csv("data/cnn_dailymail/train.csv")
-    df_val = pd.read_csv("data/cnn_dailymail/valid.csv")
+    extractor = extractor.to(device)
 
-    df_train = df_train.iloc[:50]
-    train_dataset = CNNDailyMailDataset(df=df_train,
-                                        word2id=vocab)
-    train_dataloader = BatchDataLoader(train_dataset,
-                                       batch_size=1,
-                                       shuffle=True)
+    optimizer_ext = torch.optim.Adam(extractor.parameters(),
+                                     lr=configs.optimize.lr,
+                                     betas=configs.optimize.beta,
+                                     weight_decay=configs.optimize.weight_decay)
+    logging.info("Starting training")
 
-    val_dataset = CNNDailyMailDataset(df=df_val,
-                                      word2id=vocab)
-    val_dataloader = BatchDataLoader(val_dataset,
-                                     batch_size=1,
-                                     shuffle=True)
-
-    model_name = ".".join((args.model_file,
-                           str(args.ext_model),
-                           str(args.rouge_metric),
-                           str(args.std_rouge),
-                           str(args.rl_baseline_method),
-                           "oracle_l", str(args.oracle_length),
-                           "bsz", str(args.sample_size),
-                           "rl_loss", str(args.rl_loss_method),
-                           "train_example_quota", str(
-                               args.train_example_quota),
-                           "length_limit", str(args.length_limit),
-                           "hidden", str(args.hidden),
-                           "dropout", str(args.dropout),
-                           'ext'))
-
-    log_name = ".".join(("./logs/model",
-                         str(args.ext_model),
-                         str(args.rouge_metric), str(args.std_rouge),
-                         str(args.rl_baseline_method), "oracle_l", str(
-                             args.oracle_length),
-                         "bsz", str(args.sample_size), "rl_loss", str(
-                             args.rl_loss_method),
-                         "train_example_quota", str(args.train_example_quota),
-                         "length_limit", str(args.length_limit),
-                         "hidden", str(args.hidden),
-                         "dropout", str(args.dropout),
-                         'ext'))
-
-    vocab_embeddings = vocab.get_embedding()
-    vocab_size, emb_dims = vocab_embeddings.shape
-    extractor = SimpleRNN(
-        vocab_size=vocab_size,
-        embedding_dim=emb_dims,
-        word_input_size=100,
-        sentence_input_size=400,
-        dropout_p=0,
-        word_lstm_hidden_units=200,
-        sentence_lstm_hidden_units=200,
-        word_pretrained_embedding=vocab_embeddings
-    )
-    extractor = extractor.cuda()
-
-    optimizer_ext = torch.optim.Adam(
-        extractor.parameters(), lr=args.lr, betas=(0., 0.999))
-    print("starting training")
-    n_step = 100
-
+    model_name = "best_model_exp_" + \
+        dt.datetime.now().strftime("%Y-%m-%d.%H_%M_%S") + ".pt"
+    path_to_save_model = os.path.join(configs.save_path, model_name)
     # init statistics
     reward_list = []
     best_eval_reward = 0.
-    model_save_name = model_name
-    logging.basicConfig(handlers=[logging.FileHandler('%s.log' % log_name), logging.StreamHandler()],
-                        level=logging.INFO, format='%(asctime)s [INFO] %(message)s')
 
-    reinforce = ReinforceReward(std_rouge=args.std_rouge, rouge_metric=args.rouge_metric,
-                                sample_size=args.sample_size, rl_baseline_method=args.rl_baseline_method,
-                                loss_method=1)
+    reinforce = SummarizationReward(B=configs.reinforce.B,
+                                    rouge_metric=configs.reinforce.rouge_metric,
+                                    std_rouge=configs.reinforce.std_rouge,
+                                    rl_baseline_method=configs.reinforce.rl_baseline_method)
     messsage = '[Train] - Epoch %d Step %d Reward %.4f'
-    for epoch in range(args.epochs_ext):
+    for epoch in range(configs.optimize.epochs):
         step_in_epoch = 0
         progress_bar = tqdm.tqdm(
             enumerate(train_dataloader), dynamic_ncols=True, total=len(train_dataloader))
@@ -167,40 +139,39 @@ def summarizer_train(args):
                     extractor.train()
                     # if True:
                     step_in_epoch += 1
-                    # for i in range(1):  # how many times a single data gets updated before proceeding
-                    if args.oracle_length == -1:  # use true oracle length
-                        oracle_summary_sent_num = len(doc.tokenized_summary)
-                    else:
-                        oracle_summary_sent_num = args.oracle_length
-
-                    x = doc.tokenized_content
-                    if min(x.shape) == 0:
+                    if len(doc.sentences) == 0 or len(doc.tokenized_summary) == 0:
                         continue
-                    sents = Variable(torch.from_numpy(x)).cuda()
-                    outputs = extractor(sents)
 
-                    if args.prt_inf and np.random.randint(0, 100) == 0:
-                        prt = True
+                    if len(doc.sentences) < max(configs.model.kernel_sizes):
+                        summary_index_list = range(min(len(doc.sentences), 3))
+                        loss = 0
+                        reward = RougeScore.from_summary_index_and_compute_rouge(doc, summary_index_list,
+                                                                                 std_rouge=configs.reinforce.std_rouge,
+                                                                                 rouge_metric=configs.reinforce.rouge_metric,
+                                                                                 max_num_of_bytes=configs.reinforce.length_limit)
                     else:
-                        prt = False
+                        if configs.reinforce.oracle_length == -1:  # use true oracle length
+                            oracle_summary_sent_num = len(
+                                doc.tokenized_summary)
+                        else:
+                            oracle_summary_sent_num = configs.reinforce.oracle_length
 
-                    loss, reward = reinforce.train(outputs,
-                                                   doc,
-                                                   max_num_of_sents=oracle_summary_sent_num,
-                                                   max_num_of_bytes=args.length_limit,
-                                                   prt=prt)
-                    if prt:
-                        print('Probabilities: ',
-                              outputs.squeeze().data.cpu().numpy())
-                        print('-' * 80)
+                        x = doc.tokenized_content
+                        if min(x.shape) == 0:
+                            continue
 
-                    reward_list.append(reward)
+                        sents = Variable(torch.from_numpy(x)).to(device)
+                        outputs = extractor(sents)
+                        loss, reward = reinforce.train(outputs,
+                                                       doc,
+                                                       max_num_of_sents=oracle_summary_sent_num,
+                                                       max_num_of_bytes=configs.reinforce.length_limit)
 
                     if isinstance(loss, Variable):
                         loss.backward()
 
                     if step % 1 == 0:
-                        torch.nn.utils.clip_grad_norm(
+                        torch.nn.utils.clip_grad_norm_(
                             extractor.parameters(), 1)  # gradient clipping
                         optimizer_ext.step()
                         optimizer_ext.zero_grad()
@@ -208,29 +179,52 @@ def summarizer_train(args):
                     #     (epoch, step_in_epoch, reward))
                     progress_bar.set_description(
                         messsage % (epoch, step_in_epoch, reward))
-                except Exception as e:
-                    print(f"Erro when training {e}")
 
-                if (step_in_epoch) % n_step == 0 and step_in_epoch != 0:
+                    reward_list.append(reward)
+                except Exception as e:
+                    logging.error(f"Erro when training {e}")
+
+                if (step_in_epoch) % configs.optimize.print_steps == 0 and step_in_epoch != 0:
                     logging.info('[Train] - Epoch ' + str(epoch) + ' Step ' + str(step_in_epoch) +
                                  ' Mean reward: ' + str(np.mean(reward_list)))
                     reward_list = []
 
-            if len(train_dataset) == step_in_epoch or ((step_in_epoch) % 5000 == 0 and step_in_epoch != 0):
-                eval_reward, lead3_reward = eval_model(
+            if len(train_dataloader.dataset) == step_in_epoch \
+                    or ((step_in_epoch) % configs.optimize.eval_steps == 0 and step_in_epoch != 0):
+                eval_reward, lead3_reward = eval_extractor(
                     extractor, val_dataloader,
                     eval_data="val",
-                    std_rouge=args.std_rouge,
-                    length_limit=args.length_limit,
-                    rouge_metric="avg_f")
+                    configs=configs)
+
                 if eval_reward > best_eval_reward:
                     best_eval_reward = eval_reward
                     logging.info("Saving model %s with eval_reward: %s leadreward: %s" %
-                                 (model_save_name, eval_reward, lead3_reward))
-                    torch.save(extractor, model_name)
+                                 (path_to_save_model, eval_reward, lead3_reward))
+                    torch.save(extractor, path_to_save_model)
                 logging.info('[Eval] - Epoch ' + str(epoch) +
                              ' Mean reward: ' + str(np.mean(eval_reward)))
 
+    return extractor
+
+
+def get_extractor(config: ModelConfig,
+                  vocab_size: int,
+                  embedding_dim: int,
+                  pretrained_embeddings: Any):
+    extractor = None
+    if config.extractor == "HER":
+        extractor = HERExtractor(
+            vocab_size=vocab_size,
+            embedding_dim=embedding_dim,
+            word_input_size=config.word_input_size,
+            sentence_input_size=config.sentence_input_size,
+            decode_hidden_units=config.decode_hidden_units,
+            dropout_p=config.dropout,
+            num_lstm_layers=config.num_lstm_layers,
+            word_lstm_hidden_units=config.word_lstm_hidden_units,
+            sentence_lstm_hidden_units=config.sentence_lstm_hidden_units,
+            word_pretrained_embedding=pretrained_embeddings
+        )
     return extractor
 
 
@@ -238,43 +232,93 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--vocab_file', type=str,
-                        default='./data/CNN_DM_pickle_data/vocab_100d.p')
+                        default='./data/vocab')
+    parser.add_argument('--glove_file', type=str,
+                        default='./data/vocab_100d.txt')
+    parser.add_argument('--embedding_size', type=int, default=100)
     parser.add_argument('--data_dir', type=str,
-                        default='./data/CNN_DM_pickle_data/')
-    parser.add_argument('--model_file', type=str,
-                        default='./model/summary.model')
-    parser.add_argument('--epochs_ext', type=int, default=10)
-    parser.add_argument('--load_ext', action='store_true')
-    parser.add_argument('--hidden', type=int, default=200)
-    parser.add_argument('--dropout', type=float, default=0.)
-    parser.add_argument('--lr', type=float, default=1e-5)
+                        default='./data/cnn_dailymail/')
 
-    parser.add_argument('--device', type=int, default=0,
-                        help='select GPU')
-    parser.add_argument('--std_rouge', type=bool)
+    parser.add_argument('--config_path', type=str,
+                        default='./configs/exp.yaml')
 
-    parser.add_argument('--oracle_length', type=int, default=3,
-                        help='-1 for giving actual oracle number of sentences'
-                             'otherwise choose a fixed number of sentences')
-    parser.add_argument('--rouge_metric', type=str, default='avg_f')
-    parser.add_argument('--rl_baseline_method', type=str, default="batch_avg",
-                        help='greedy, global_avg, batch_avg, batch_med, or none')
-    parser.add_argument('--rl_loss_method', type=int, default=2,
-                        help='1 for computing 1-log on positive advantages,'
-                             '0 for not computing 1-log on all advantages')
-    parser.add_argument('--sample_size', type=int, default=20)
-    parser.add_argument('--fine_tune', action='store_true',
-                        help='fine tune with std rouge')
-    parser.add_argument('--train_example_quota', type=int, default=-1,
-                        help='how many train example to train on: -1 means full train data')
-    parser.add_argument('--length_limit', type=int, default=-1,
-                        help='length limit output')
-    parser.add_argument('--ext_model', type=str, default="simpleRNN",
-                        help='lstm_summarunner, gru_summarunner, bag_of_words, simpleRNN')
-    parser.add_argument('--prt_inf', action='store_true')
+    parser.add_argument('--cuda', type=bool, default=True)
+    parser.add_argument('--eval_mode', action="store_true")
+    parser.add_argument('--eval_data', type=str, default="test")
+    parser.add_argument('--pretrained_model', type=str,
+                        default=None)
 
     args = parser.parse_args()
 
-    if args.length_limit > 0:
-        args.oracle_length = 2
-    net = summarizer_train(args)
+    if not args.eval_mode:
+        configs = None
+        config_json = {}
+        with open(args.config_path, "r") as f:
+            config_json = yaml.load(f, yaml.SafeLoader)
+        configs = Configs(**config_json)
+
+        # logger = logging.getLogger(name="exp")
+        log_name = "exp_log_" + dt.datetime.now().strftime("%Y-%m-%d")
+        path_to_log_file = os.path.join(configs.log_path, log_name)
+        # logger.addHandler(logging.FileHandler('%s.log' % path_to_log_file))
+        # logger.addHandler(logging.StreamHandler())
+        # logger.info("Hello")
+
+        os.makedirs(configs.log_path, exist_ok=True)
+        os.makedirs(configs.save_path, exist_ok=True)
+        os.makedirs(configs.result_path, exist_ok=True)
+
+        logging.basicConfig(handlers=[logging.FileHandler('%s.log' % path_to_log_file), logging.StreamHandler()],
+                            level=logging.INFO, format='%(asctime)s [INFO] %(message)s')
+        logging.info(json.dumps(config_json, indent=4))
+
+        vocab = Vocab(vocab_file_path=args.vocab_file,
+                      glove_file_path=args.glove_file,
+                      embedding_size=args.embedding_size)
+        vocab_embeddings = vocab.get_embedding()
+        vocab_size, emb_dims = vocab_embeddings.shape
+
+        extractor = None
+        if args.pretrained_model:
+            logging.info(f"Load model from {args.pretrained_model}")
+            extractor = torch.load(args.pretrained_model,
+                                   map_location=lambda storage, loc: storage)
+        extractor = get_extractor(configs.model,
+                                  vocab_size=vocab_size,
+                                  embedding_dim=emb_dims,
+                                  pretrained_embeddings=vocab_embeddings)
+
+        logging.info(extractor)
+
+        df_train = pd.read_csv(os.path.join(args.data_dir, "train.csv"))
+        df_val = pd.read_csv(os.path.join(args.data_dir, "valid.csv"))
+
+        df_train = df_train
+        df_val = df_val
+        train_dataset = CNNDailyMailDataset(df=df_train,
+                                            word2id=vocab)
+        train_dataloader = BatchDataLoader(train_dataset,
+                                           batch_size=1,
+                                           shuffle=True)
+
+        val_dataset = CNNDailyMailDataset(df=df_val,
+                                          word2id=vocab)
+        val_dataloader = BatchDataLoader(val_dataset,
+                                         batch_size=1,
+                                         shuffle=True)
+
+        if configs.reinforce.length_limit > 0:
+            configs.reinforce.length_limit = 2
+
+        device = "cpu"
+        if args.cuda:
+            device = "cuda"
+
+        net = train_extractor(extractor=extractor,
+                              train_dataloader=train_dataloader,
+                              val_dataloader=val_dataloader,
+                              device=device,
+                              configs=configs)
+
+    else:
+        pass

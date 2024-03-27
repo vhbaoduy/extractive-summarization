@@ -30,6 +30,7 @@ class SummarizationReward:
     _RL_BASELINE_METHODS = ["batch_avg", "batch_med", "global_avg", "greedy"]
     _ROUGE_METRICS = ["avg_f", "avg_r", "f", "r", "all"]
     _EPS = 1e-8
+    _EPSILON_BANDIT_POLICY = 0.1
 
     def __init__(self,
                  B: int = 20,
@@ -102,18 +103,20 @@ class SummarizationReward:
                 assert len(probs_torch.size()) == 1
                 if not if_test:
                     # herke's method
-                    epsilon = 0.1
+                    # epsilon = 0.1
                     mask = Variable(torch.ones(probs_torch.size()
                                                ).cuda(), requires_grad=False)
                     loss_list = []
                     for i in range(max_num_of_sents):
                         p_masked = probs_torch * mask
-                        if random.uniform(0, 1) <= epsilon:  # explore
+                        if random.uniform(0, 1) <= cls._EPSILON_BANDIT_POLICY:  # explore
                             # when testing, it should be closed
                             selected_idx = torch.multinomial(mask, 1)
                         else:
                             selected_idx = torch.multinomial(p_masked, 1)
-                        loss_i = (epsilon / mask.sum() + (1 - epsilon) *
+
+                        # Compute loss func
+                        loss_i = (cls._EPSILON_BANDIT_POLICY / mask.sum() + (1 - cls._EPSILON_BANDIT_POLICY) *
                                   p_masked[selected_idx] / p_masked.sum()).log()
                         loss_list.append(loss_i)
                         mask = mask.clone()
@@ -237,8 +240,7 @@ class SummarizationReward:
               doc: Document,
               min_num_of_sents: int = 1,
               max_num_of_sents: int = 3,
-              max_num_of_bytes: int = -1,
-              prt: bool = False):
+              max_num_of_bytes: int = -1):
         """
         :return: training_loss_of_the current example
         """
@@ -262,21 +264,76 @@ class SummarizationReward:
         loss = self.generate_batch_loss(
             batch_index_and_loss_lists, batch_rewards, rl_baseline_reward)
 
-        greedy_index_list, _ = self.generate_index_list_and_loss("greedy")
-        greedy_reward = self.get_reward(greedy_index_list, 
+        greedy_index_list, _ = self.generate_indexes_and_loss(sample_method="greedy",
+                                                              probs_numpy=self.probs_numpy,
+                                                              probs_torch=self.probs_torch,
+                                                              min_num_of_sents=self.min_num_of_sents,
+                                                              max_num_of_sents=self.max_num_of_sents)
+        greedy_reward = self.get_reward(greedy_index_list,
                                         max_num_of_bytes)
 
-        # if prt:
-        #     print('Batch rewards:', np.array(batch_rewards))
-        #     print('Greedy rewards:', np.array(greedy_reward))
-        #     print('Baseline rewards:', np.array(rl_baseline_reward))
-
-        #     lead_index_list, _ = self.generate_index_list_and_loss("lead3")
-        #     lead_reward = self.generate_reward(
-        #         lead_index_list, max_num_of_bytes)
-        #     print('Lead3 rewards:', np.array(lead_reward))
-
         return loss, greedy_reward
+
+
+class ReinforceLoss:
+    _sample_method = "greedy"
+
+    @classmethod
+    def get(cls,
+            probs: torch.Tensor,
+            doc: Document,
+            rouge_metric: str = "all",
+            max_num_of_sents: int = 3,
+            max_num_of_bytes: int = -1,
+            min_num_of_sents: int = 1,
+            std_rouge: bool = False,
+            test: bool = False,
+            score_flag: bool = False,
+            path: str = "./"
+            ):
+        # sample sentences
+        probs_numpy = probs.data.cpu().numpy()
+        probs_numpy = np.reshape(probs_numpy, len(probs_numpy))
+        # max of sents# in doc and sents# in summary
+        max_num_of_sents = min(len(probs_numpy), max_num_of_sents)
+
+        rl_baseline_summary_index, _ = SummarizationReward.get_summary_index(probs_numpy,
+                                                                             probs,
+                                                                             sample_method=cls._sample_method,
+                                                                             min_num_of_sents=min_num_of_sents,
+                                                                             max_num_of_sents=max_num_of_sents,
+                                                                             if_test=test)
+
+        rl_baseline_summary_index = sorted(rl_baseline_summary_index)
+
+        rl_baseline_reward = RougeScore.from_summary_index_and_compute_rouge(
+            doc, rl_baseline_summary_index, rouge_metric=rouge_metric,
+            std_rouge=std_rouge,
+            max_num_of_bytes=max_num_of_bytes,
+            score_flag=score_flag,
+            path=path)
+
+        lead3_reward = RougeScore.from_summary_index_and_compute_rouge(
+            doc, range(max_num_of_sents),
+            rouge_metric=rouge_metric,
+            std_rouge=std_rouge,
+            max_num_of_bytes=max_num_of_bytes,
+            score_flag=score_flag,
+            path=path)
+
+        # rl_baseline_reward = RougeScore.compute_score(rl_baseline_ref, rl_baseline_hyp,
+        #                                               id=doc.id,
+        #                                               rouge_metric=rouge_metric,
+        #                                               std_rouge=std_rouge,
+        #                                               max_num_of_bytes=max_num_of_bytes)
+
+        # lead3_reward = RougeScore.compute_score(lead3_ref, lead3_hyp,
+        #                                         id=doc.id,
+        #                                         rouge_metric=rouge_metric,
+        #                                         std_rouge=std_rouge,
+        #                                         max_num_of_bytes=max_num_of_bytes)
+
+        return rl_baseline_reward, lead3_reward
 
 
 class ReinforceReward:

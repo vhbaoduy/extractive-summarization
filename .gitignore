@@ -11,5 +11,5 @@
 /logs
 /draft
 /examples
-/model
+/model*
 /ROUGE-1.5.5
