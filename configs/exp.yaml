@@ -1,0 +1,37 @@
+model:
+  extractor: "HER"
+  word_input_size: 100
+  sentence_input_size: 400
+  word_lstm_hidden_units: 200
+  sentence_lstm_hidden_units: 200
+  num_lstm_layers: 2
+  num_filters: 100 # feature maps
+  kernel_sizes: [1, 2, 3] # H corresponding to K= 3
+  decode_hidden_units: 200
+  dropout: 0.
+
+reinforce:
+  # Reinforce
+  B: 20
+  num_of_min_sents: 1
+  num_of_max_sents: 3
+  oracle_length: -1
+  length_limit: -1
+  rl_baseline_method: "batch_avg" # 'greedy, global_avg, batch_avg, batch_med, or none'
+  rouge_metric: "avg_f" # ["avg_f", "avg_r", "f", "r", "all"]
+  std_rouge: False
+
+# Opimitize
+optimize:
+  lr: 0.00001
+  beta: [0, 0.999]
+  weight_decay: 0.000001
+  epochs: 10
+
+  eval_steps: 1000
+  print_steps: 200
+
+log_path: "logs"
+save_path: "models"
+result_path: "results"
+pretrained_model_path: ""

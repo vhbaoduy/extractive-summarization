@@ -1,7 +1,0 @@
-simple_rnn:
-  embedding_size: 100
-  word_input_size: 100
-  sentence_input_size: 400
-  word_lstm_hidden_units: 200
-  sentence_lstm_hidden_units: 200
-  dropout: 0.0
