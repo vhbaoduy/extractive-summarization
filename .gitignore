@@ -1,0 +1,15 @@
+/data
+**/__pycache__
+**/.DS_Store
+**/runs
+
+/tmp
+/.vscode
+/.idea/
+/.dvc
+/data_dvc
+/logs
+/draft
+/examples
+/model
+/ROUGE-1.5.5
