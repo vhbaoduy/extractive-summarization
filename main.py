@@ -21,6 +21,8 @@ import yaml
 import json
 
 from utils.config import Configs, ModelConfig
+import sys
+sys.path.append(".")
 
 logging.getLogger('global').disabled = True
 
@@ -28,7 +30,8 @@ logging.getLogger('global').disabled = True
 def eval_extractor(extractor: torch.nn.Module,
                    dataloader: BatchDataLoader,
                    configs: Configs,
-                   eval_data: str = "test",):
+                   eval_data: str = "test",
+                   device="cuda"):
     extractor.eval()
     # eval_reward, lead3_reward = evaluate.ext_model_eval(
     #     extractor, vocab, args, "val")
@@ -38,8 +41,11 @@ def eval_extractor(extractor: torch.nn.Module,
     messsage = '[Eval] - Mean reward %.4f Lead3  %.4f'
     eval_rewards, lead3_rewards = [], []
     step_in_epoch = 0
-
-#
+    rouge_metric = configs.reinforce.rouge_metric
+    std_rouge = configs.reinforce.std_rouge
+    if eval_data == "test":
+        rouge_metric = "all"
+        std_rouge = True
     for step, batch_data in progress_bar:
         for doc in batch_data:
             try:
@@ -50,9 +56,10 @@ def eval_extractor(extractor: torch.nn.Module,
 
                 if len(doc.sentences) < max(configs.model.kernel_sizes):
                     summary_index_list = range(min(len(doc.sentences), 3))
+
                     reward = RougeScore.from_summary_index_and_compute_rouge(doc, summary_index_list,
-                                                                             std_rouge=configs.reinforce.std_rouge,
-                                                                             rouge_metric=configs.reinforce.rouge_metric,
+                                                                             std_rouge=std_rouge,
+                                                                             rouge_metric=rouge_metric,
                                                                              max_num_of_bytes=configs.reinforce.length_limit)
                     lead3_r = reward
                 else:
@@ -65,27 +72,27 @@ def eval_extractor(extractor: torch.nn.Module,
                     x = doc.tokenized_content
                     if min(x.shape) == 0:
                         continue
-                    sents = Variable(torch.from_numpy(x)).cuda()
+                    sents = Variable(torch.from_numpy(x)).to(device)
                     outputs = extractor(sents)
                     compute_score = (step == len(dataloader.dataset) -
                                      1) or (configs.reinforce.std_rouge is False)
                     if eval_data == "test":
                         reward, lead3_r = ReinforceLoss.get(probs=outputs,
                                                             doc=doc,
-                                                            rouge_metric="all",
+                                                            rouge_metric=rouge_metric,
                                                             max_num_of_sents=oracle_summary_sent_num,
                                                             max_num_of_bytes=configs.reinforce.length_limit,
-                                                            std_rouge=configs.reinforce.std_rouge,
+                                                            std_rouge=std_rouge,
                                                             path=configs.result_path,
                                                             score_flag=compute_score,
                                                             test=True)
                     else:
                         reward, lead3_r = ReinforceLoss.get(probs=outputs,
                                                             doc=doc,
-                                                            rouge_metric=configs.reinforce.rouge_metric,
+                                                            rouge_metric=rouge_metric,
                                                             max_num_of_sents=oracle_summary_sent_num,
                                                             max_num_of_bytes=configs.reinforce.length_limit,
-                                                            std_rouge=configs.reinforce.std_rouge,
+                                                            std_rouge=std_rouge,
                                                             score_flag=compute_score,
                                                             path=configs.result_path)
 
@@ -243,34 +250,35 @@ if __name__ == "__main__":
                         default='./configs/exp.yaml')
 
     parser.add_argument('--cuda', type=bool, default=True)
-    parser.add_argument('--eval_mode', action="store_true")
-    parser.add_argument('--eval_data', type=str, default="test")
+    parser.add_argument('--eval_mode', type=bool, default=False)
+    parser.add_argument('--eval_data', type=str, default="valid")
     parser.add_argument('--pretrained_model', type=str,
                         default=None)
 
     args = parser.parse_args()
 
+    configs = None
+    config_json = {}
+    with open(args.config_path, "r") as f:
+        config_json = yaml.load(f, yaml.SafeLoader)
+    configs = Configs(**config_json)
+
+    # logger = logging.getLogger(name="exp")
+    log_name = "exp_log_" + dt.datetime.now().strftime("%Y-%m-%d")
+    path_to_log_file = os.path.join(configs.log_path, log_name)
+    # logger.addHandler(logging.FileHandler('%s.log' % path_to_log_file))
+    # logger.addHandler(logging.StreamHandler())
+    # logger.info("Hello")
+
+    os.makedirs(configs.log_path, exist_ok=True)
+    os.makedirs(configs.save_path, exist_ok=True)
+    os.makedirs(configs.result_path, exist_ok=True)
+
+    logging.basicConfig(handlers=[logging.FileHandler('%s.log' % path_to_log_file), logging.StreamHandler()],
+                        level=logging.INFO, format='%(asctime)s [INFO] %(message)s')
+    logging.info(json.dumps(config_json, indent=4))
+
     if not args.eval_mode:
-        configs = None
-        config_json = {}
-        with open(args.config_path, "r") as f:
-            config_json = yaml.load(f, yaml.SafeLoader)
-        configs = Configs(**config_json)
-
-        # logger = logging.getLogger(name="exp")
-        log_name = "exp_log_" + dt.datetime.now().strftime("%Y-%m-%d")
-        path_to_log_file = os.path.join(configs.log_path, log_name)
-        # logger.addHandler(logging.FileHandler('%s.log' % path_to_log_file))
-        # logger.addHandler(logging.StreamHandler())
-        # logger.info("Hello")
-
-        os.makedirs(configs.log_path, exist_ok=True)
-        os.makedirs(configs.save_path, exist_ok=True)
-        os.makedirs(configs.result_path, exist_ok=True)
-
-        logging.basicConfig(handlers=[logging.FileHandler('%s.log' % path_to_log_file), logging.StreamHandler()],
-                            level=logging.INFO, format='%(asctime)s [INFO] %(message)s')
-        logging.info(json.dumps(config_json, indent=4))
 
         vocab = Vocab(vocab_file_path=args.vocab_file,
                       glove_file_path=args.glove_file,
@@ -321,4 +329,49 @@ if __name__ == "__main__":
                               configs=configs)
 
     else:
-        pass
+        df = None
+        if args.eval_data == "test":
+            df = pd.read_csv(os.path.join(args.data_dir, "test.csv"))
+        else:
+            df = pd.read_csv(os.path.join(args.data_dir, "valid.csv"))
+
+        vocab = Vocab(vocab_file_path=args.vocab_file,
+                      glove_file_path=args.glove_file,
+                      embedding_size=args.embedding_size)
+        vocab_embeddings = vocab.get_embedding()
+        vocab_size, emb_dims = vocab_embeddings.shape
+
+        eval_dataset = CNNDailyMailDataset(df=df,
+                                           word2id=vocab)
+        eval_dataloader = BatchDataLoader(eval_dataset,
+                                          batch_size=1)
+
+        logging.info(f"Load model from {args.pretrained_model}")
+        device = "cpu"
+        if args.cuda:
+            device = "cuda"
+        try:
+            extractor = torch.load(args.pretrained_model,
+                                   map_location=lambda storage, loc: storage)
+            extractor.to(device)
+        except:
+            extractor = get_extractor(configs.model,
+                                      vocab_size=vocab_size,
+                                      embedding_dim=emb_dims,
+                                      pretrained_embeddings=vocab_embeddings)
+            extractor.load_state_dict(torch.load(args.pretrained_model))
+            extractor.to(device)
+        avg_rouge, avg_lead3 = eval_extractor(extractor,
+                                              configs=configs,
+                                              dataloader=eval_dataloader,
+                                              eval_data=args.eval_data,
+                                              device=device)
+        columns = ["rouge-1(p)", "rouge-1(r)", "rouge-1(f)",
+                   "rouge-2(p)", "rouge-2(r)", "rouge-2(f)",
+                   "rouge-l(p)", "rouge-l(r)", "rouge-l(f)"]
+        logging.info(f"Avg_rouge: {avg_rouge}")
+        logging.info(f"Avg_lead3: {avg_lead3}")
+        s = pd.Series(['Avg_HER', "Avg_lead3"])
+        # result = pd.DataFrame([avg_rouge, avg_lead3])
+        # result.set_index(s)
+        # result.to_csv("result_test_2.csv")

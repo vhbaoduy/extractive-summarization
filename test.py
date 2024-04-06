@@ -56,7 +56,7 @@ def eval_model(extractor: torch.nn.Module,
                     reward, lead3_r = reinforce_loss(outputs, doc, id=doc.id,
                                                      max_num_of_sents=oracle_summary_sent_num,
                                                      max_num_of_bytes=length_limit,
-                                                     std_rouge=std_rouge,
+                                                     std_rouge=True,
                                                      rouge_metric="all",
                                                      compute_score=compute_score)
                 else:
