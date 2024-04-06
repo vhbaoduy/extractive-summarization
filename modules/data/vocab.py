@@ -6,7 +6,9 @@ class Vocab:
     def __init__(self,
                  vocab_file_path: str = None,
                  glove_file_path: str = None,
-                 embedding_size: int = None):
+                 embedding_size: int = None,
+                 progress: bool = True,
+                 ):
         self.word_list = ['<pad>', '<unk>', '<s>', '<\s>']
         self.w2i = {}
         self.i2w = {}
@@ -16,6 +18,7 @@ class Vocab:
         self.vocab_file_path = vocab_file_path
         self.glove_file_path = glove_file_path
         self.embedding_size = embedding_size
+        self.progress = progress
 
         if self.vocab_file_path is not None:
             self.add_vocab(self.vocab_file_path)
@@ -69,8 +72,9 @@ class Vocab:
                     embedding = np.array([float(val) for val in splitLine[1:]])
                     model[word] = embedding
                     embedding_matrix[self.w2i[word]] = embedding
-                    if len(model) % 1000 == 0:
-                        print("Loaded %d embedding data" % len(model))
+                    if self.progress:
+                        if len(model) % 1000 == 0:
+                            print("Loaded %d embedding data" % len(model))
 
         self.embeddings = embedding_matrix
         info_str = "%d words out of %d has embeddings in the glove file" % \

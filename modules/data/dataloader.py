@@ -15,11 +15,13 @@ class Document:
                  id: str,
                  sentences: List[List[str]],
                  tokenized_content: Any = None,
-                 tokenized_summary: Any = None):
+                 tokenized_summary: Any = None,
+                 index: int = None):
         self.sentences = sentences
         self.tokenized_content = tokenized_content
         self.tokenized_summary = tokenized_summary
         self.id = id
+        self.index = index
 
     def get_sentences(self, indexes):
         merge_sentences = []
@@ -75,7 +77,7 @@ class CNNDailyMailDataset(Dataset):
         preprocessed_article = preprocess_text(article)
         tokenized_article = tokenize_text(preprocessed_article)
 
-        preprocessed_summary = preprocess_text(sample["highlights"])
+        preprocessed_summary = preprocess_text(summary)
         tokenized_summary = tokenize_text(preprocessed_summary)
 
         # Word to index to vocab
@@ -97,7 +99,8 @@ class CNNDailyMailDataset(Dataset):
         data = Document(sentences=tokenized_article,
                         tokenized_summary=tokenized_summary,
                         tokenized_content=article_array,
-                        id=sample["id"])
+                        id=sample["id"],
+                        index=idx)
         return data
 
 
@@ -110,7 +113,7 @@ class BatchDataLoader:
         self.batch_size = batch_size
 
     def __len__(self):
-        return int(len(self.dataset) / self.batch_size) +1 
+        return int(len(self.dataset) / self.batch_size) + 1
 
     def __iter__(self):
         return iter(self.dataset(self.batch_size, self.shuffle))

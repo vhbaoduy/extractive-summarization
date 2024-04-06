@@ -175,7 +175,7 @@ class HERExtractor(nn.Module):
             *local_outputs_tmp,
         ], dim=-1)
         mu_1 = self.decoder1(enc_output)
-        mu_2 = self.decoder2(torch.multiply(enc_output, mu_1))
+        mu_2 = self.decoder2(torch.multiply(enc_output, 1-mu_1))
 
         prob = (mu_1 + mu_2)/2
         prob = prob.view(sequence_num, 1)
