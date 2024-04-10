@@ -1,0 +1,33 @@
+{
+  "name": "HER Summary",
+  "description": "Base Level Extension",
+  "version": "1.0",
+  "manifest_version": 3,
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "tabs"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js",
+        "background.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "main.html",
+    "default_icon": "statics/icon_32.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "32": "statics/icon_32.png"
+  }
+}
