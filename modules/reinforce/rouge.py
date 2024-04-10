@@ -84,33 +84,33 @@ class RougeScore:
                 f.write(Rouge155.convert_text_to_rouge_format('\n'.join(ref)))
             with codecs.open(os.path.join(path_eval, 'hyp.' + str(id) + '.txt'), 'w', encoding="UTF-8") as f:
                 f.write(Rouge155.convert_text_to_rouge_format('\n'.join(hyp)))
-            # if score_flag:
-            #     rouge155.system_dir = path_eval
-            #     rouge155.model_dir = path_eval
-            #     rouge155.system_filename_pattern = 'hyp.(\d+).txt'
-            #     rouge155.model_filename_pattern = 'ref.#ID#.txt'
+            if score_flag:
+                rouge155.system_dir = path_eval
+                rouge155.model_dir = path_eval
+                rouge155.system_filename_pattern = 'hyp.(\d+).txt'
+                rouge155.model_filename_pattern = 'ref.#ID#.txt'
 
-            #     output = rouge155.evaluate()
-            #     output_dict = rouge155.output_to_dict(output)
-            #     # cleanup
-            #     shutil.rmtree(path_eval)
-            #     shutil.rmtree(rouge155._config_dir)
+                output = rouge155.evaluate()
+                output_dict = rouge155.output_to_dict(output)
+                # cleanup
+                shutil.rmtree(path_eval)
+                shutil.rmtree(rouge155._config_dir)
 
-            #     if rouge_metric[1] == 'f':
-            #         return output_dict["rouge_%s_f_score" % rouge_metric[0]]
-            #     elif rouge_metric[1] == 'r':
-            #         return output_dict["rouge_%s_recall" % rouge_metric[0]]
-            #     elif rouge_metric == 'avg_f':
-            #         return (output_dict["rouge_1_f_score"] + output_dict["rouge_2_f_score"] + output_dict[
-            #             "rouge_l_f_score"]) / 3
-            #     elif rouge_metric == 'avg_r':
-            #         return (output_dict["rouge_1_recall"] + output_dict["rouge_2_recall"] + output_dict["rouge_l_recall"]) / 3
-            #     else:
-            #         return (output_dict["rouge_1_precision"], output_dict["rouge_1_recall"], output_dict["rouge_1_f_score"],
-            #                 output_dict["rouge_2_precision"], output_dict["rouge_2_recall"], output_dict["rouge_2_f_score"],
-            #                 output_dict["rouge_l_precision"], output_dict["rouge_l_recall"], output_dict["rouge_l_f_score"])
-            # else:
-            return 0.0
+                if rouge_metric[1] == 'f':
+                    return output_dict["rouge_%s_f_score" % rouge_metric[0]]
+                elif rouge_metric[1] == 'r':
+                    return output_dict["rouge_%s_recall" % rouge_metric[0]]
+                elif rouge_metric == 'avg_f':
+                    return (output_dict["rouge_1_f_score"] + output_dict["rouge_2_f_score"] + output_dict[
+                        "rouge_l_f_score"]) / 3
+                elif rouge_metric == 'avg_r':
+                    return (output_dict["rouge_1_recall"] + output_dict["rouge_2_recall"] + output_dict["rouge_l_recall"]) / 3
+                else:
+                    return (output_dict["rouge_1_precision"], output_dict["rouge_1_recall"], output_dict["rouge_1_f_score"],
+                            output_dict["rouge_2_precision"], output_dict["rouge_2_recall"], output_dict["rouge_2_f_score"],
+                            output_dict["rouge_l_precision"], output_dict["rouge_l_recall"], output_dict["rouge_l_f_score"])
+            else:
+                return 0.0
 
     @classmethod
     def from_summary_index_and_compute_rouge(cls,
@@ -228,33 +228,3 @@ def from_summary_index_compute_rouge(doc, summary_index, std_rouge=False, rouge_
             ref, hyp, rouge_metric=rouge_metric, max_num_of_bytes=max_num_of_bytes)
     return score
 
-
-def reinforce_loss(probs, doc, id=0,
-                   max_num_of_sents=3, max_num_of_bytes=-1,
-                   std_rouge=False, rouge_metric="all", compute_score=True):
-    # sample sentences
-    probs_numpy = probs.data.cpu().numpy()
-    probs_numpy = np.reshape(probs_numpy, len(probs_numpy))
-    # max of sents# in doc and sents# in summary
-    max_num_of_sents = min(len(probs_numpy), max_num_of_sents)
-
-    rl_baseline_summary_index, _ = get_summary_index(probs_numpy, probs,
-                                                     sample_method="greedy", max_num_of_sents=max_num_of_sents)
-    rl_baseline_summary_index = sorted(rl_baseline_summary_index)
-    rl_baseline_hyp, rl_baseline_ref = from_summary_index_generate_hyp_ref(
-        doc, rl_baseline_summary_index)
-
-    lead3_hyp, lead3_ref = from_summary_index_generate_hyp_ref(
-        doc, range(max_num_of_sents))
-    if std_rouge:
-        rl_baseline_reward = RougeTest_pyrouge(rl_baseline_ref, rl_baseline_hyp, id=id, rouge_metric=rouge_metric,
-                                               compute_score=compute_score, path=os.path.join('./result/rl'))
-        lead3_reward = RougeTest_pyrouge(lead3_ref, lead3_hyp, id=id, rouge_metric=rouge_metric,
-                                         compute_score=compute_score, path=os.path.join('./result/lead'))
-    else:
-        rl_baseline_reward = RougeTest_rouge(rl_baseline_ref, rl_baseline_hyp, rouge_metric,
-                                             max_num_of_bytes=max_num_of_bytes)
-        lead3_reward = RougeTest_rouge(
-            lead3_ref, lead3_hyp, rouge_metric, max_num_of_bytes=max_num_of_bytes)
-
-    return rl_baseline_reward, lead3_reward

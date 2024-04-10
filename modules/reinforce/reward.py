@@ -9,7 +9,6 @@ from typing import Union, Any, List
 
 
 from modules.reinforce.rouge import from_summary_index_compute_rouge, RougeScore
-from modules.reinforce.utils import get_summary_index
 from modules.data.dataloader import Document
 
 
@@ -321,149 +320,8 @@ class ReinforceLoss:
             score_flag=score_flag,
             path=path)
 
-        # rl_baseline_reward = RougeScore.compute_score(rl_baseline_ref, rl_baseline_hyp,
-        #                                               id=doc.id,
-        #                                               rouge_metric=rouge_metric,
-        #                                               std_rouge=std_rouge,
-        #                                               max_num_of_bytes=max_num_of_bytes)
-
-        # lead3_reward = RougeScore.compute_score(lead3_ref, lead3_hyp,
-        #                                         id=doc.id,
-        #                                         rouge_metric=rouge_metric,
-        #                                         std_rouge=std_rouge,
-        #                                         max_num_of_bytes=max_num_of_bytes)
 
         return rl_baseline_reward, lead3_reward
-
-
-class ReinforceReward:
-    def __init__(self, std_rouge=False, rouge_metric="all", sample_size=5, rl_baseline_method="greedy", loss_method=1):
-        """
-        :param std_rouge:
-        :param rouge_metric:
-        :param b:
-        :param rl_baseline: "greedy", "global_avg", "batch_avg", "batch_med", None
-        """
-        self.probs_torch = None
-        self.probs_numpy = None
-        self.max_num_of_sents = None
-        self.doc = None
-
-        self.global_avg_reward = 0.
-        self.train_examples_seen = 0.
-
-        self.std_rouge = std_rouge
-        self.rouge_metric = rouge_metric
-        self.rl_baseline_method = rl_baseline_method
-        self.sample_size = sample_size
-        self.loss_method = loss_method
-
-    def train(self, probs, doc, max_num_of_sents=3, max_num_of_bytes=-1, prt=False):
-        """
-        :return: training_loss_of_the current example
-        """
-        self.update_data_instance(probs, doc, max_num_of_sents)
-        self.train_examples_seen += 1
-        batch_index_and_loss_lists = self.sample_batch(self.sample_size)
-        batch_rewards = [
-            self.generate_reward(idx_list[0], max_num_of_bytes)
-            for idx_list in batch_index_and_loss_lists
-        ]
-
-        rl_baseline_reward = self.compute_baseline(batch_rewards)
-        loss = self.generate_batch_loss(
-            batch_index_and_loss_lists, batch_rewards, rl_baseline_reward)
-
-        greedy_index_list, _ = self.generate_index_list_and_loss("greedy")
-        greedy_reward = self.generate_reward(
-            greedy_index_list, max_num_of_bytes)
-
-        if prt:
-            print('Batch rewards:', np.array(batch_rewards))
-            print('Greedy rewards:', np.array(greedy_reward))
-            print('Baseline rewards:', np.array(rl_baseline_reward))
-
-            lead_index_list, _ = self.generate_index_list_and_loss("lead3")
-            lead_reward = self.generate_reward(
-                lead_index_list, max_num_of_bytes)
-            print('Lead3 rewards:', np.array(lead_reward))
-
-        return loss, greedy_reward
-
-    def validate(self, probs, doc, max_num_of_sents=3):
-        """
-        :return: training_loss_of_the current example
-        """
-        self.update_data_instance(probs, doc, max_num_of_sents)
-        summary_index_list, _ = self.generate_index_list_and_loss("greedy")
-        reward_tuple = from_summary_index_compute_rouge(self.doc, summary_index_list,
-                                                        std_rouge=self.std_rouge, rouge_metric="all")
-        return reward_tuple
-
-    def update_data_instance(self, probs, doc, max_num_of_sents=3):
-        # self.probs_torch = probs
-        # self.probs_torch = torch.clamp(probs, 1e-6, 1 - 1e-6)  # this just make sure no zero
-        self.probs_torch = probs * 0.9999 + 0.00005  # this just make sure no zero
-        probs_numpy = probs.data.cpu().numpy()
-        self.probs_numpy = np.reshape(probs_numpy, len(probs_numpy))
-        self.doc = doc
-        self.max_num_of_sents = min(len(probs_numpy), max_num_of_sents)
-
-    def generate_index_list_and_loss(self, sample_method="sample"):
-        """
-        :param sample_method: "lead3,leadk,sample, greedy"
-        :return: return a list of sentence indexes for next step of computation
-        """
-        if sample_method == "lead3":
-            return range(3), 0
-        elif sample_method == "lead_oracle":
-            return range(self.max_num_of_sents), 0
-        else:  # either "sample" or "greedy" based on the prob_list
-            return get_summary_index(self.probs_numpy, self.probs_torch,
-                                     sample_method=sample_method, max_num_of_sents=self.max_num_of_sents)
-
-    def generate_reward(self, summary_index_list, max_num_of_bytes=-1):
-        reward = from_summary_index_compute_rouge(self.doc, summary_index_list,
-                                                  std_rouge=self.std_rouge,
-                                                  rouge_metric=self.rouge_metric,
-                                                  max_num_of_bytes=max_num_of_bytes)
-        return reward
-
-    def sample_batch(self, b):
-        batch_index_and_loss_lists = [
-            self.generate_index_list_and_loss() for i in range(b)]
-        return batch_index_and_loss_lists
-
-    def compute_baseline(self, batch_rewards):
-        def running_avg(t, old_mean, new_score):
-            return (t - 1) / t * old_mean + new_score / t
-
-        batch_avg_reward = np.mean(batch_rewards)
-        batch_median_reward = np.median(batch_rewards)
-        self.global_avg_reward = running_avg(
-            self.train_examples_seen, self.global_avg_reward, batch_avg_reward)
-
-        if self.rl_baseline_method == "batch_avg":
-            return batch_avg_reward
-        if self.rl_baseline_method == "batch_med":
-            return batch_median_reward
-        elif self.rl_baseline_method == "global_avg":
-            return self.global_avg_reward
-        elif self.rl_baseline_method == "greedy":
-            summary_index_list, _ = self.generate_index_list_and_loss("greedy")
-            return self.generate_reward(summary_index_list)
-        else:  # none
-            return 0
-
-    def generate_batch_loss(self, batch_index_and_loss_lists, batch_rewards, rl_baseline_reward):
-        loss_list = [
-            batch_index_and_loss_lists[i][1] * (
-                (rl_baseline_reward - batch_rewards[i]) / (rl_baseline_reward + 1e-9))
-            for i in range(len(batch_rewards))
-        ]
-        avg_loss = sum(loss_list) / (float(len(loss_list)) + 1e-8)
-        return avg_loss
-
 
 if __name__ == '__main__':
     pass

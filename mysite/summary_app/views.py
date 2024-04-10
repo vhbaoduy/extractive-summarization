@@ -59,6 +59,29 @@ def summarize_page(request):
         return JsonResponse(data)
     return JsonResponse({})
 
+
+def setting_app(request):
+    req_body = request.body.decode("utf-8")
+    req_body = json.loads(req_body)
+    max_num_sentences = None
+    success = False
+    try:
+        max_num_sentences = int(req_body["max_num_sentences"])
+        print("Config", max_num_sentences)
+        if max_num_sentences >= -1:
+            SummaryExtractor.get_instance().set_config(max_length=max_num_sentences)
+            success = True
+        else:
+            success = False
+
+    except:
+        print("`max_num_sentences` not found in request body")
+    data = {
+        "success": success
+    }
+    return JsonResponse(data)
+
+
 def summarize_content(request):
     req_body = request.body.decode("utf-8")
     req_body = json.loads(req_body)
@@ -75,4 +98,3 @@ def summarize_content(request):
         }
         return JsonResponse(data)
     return JsonResponse({})
-

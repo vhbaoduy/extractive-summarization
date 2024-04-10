@@ -32,24 +32,12 @@ class SummaryExtractor:
         if cls._instance is None:
             cls._instance = SummaryExtractor(app_config)
         return cls._instance
-    
+
+    def set_config(self,
+                   max_length: int = None):
+        self.app_config.max_length = max_length
+
     def get_result(self, content: str):
         summary_content = self.engine.summarize(content=content,
                                                 max_num_of_sentences=self.app_config.max_length)
         return summary_content
-
-    # def start(self):
-    #     self.process = Process(target=self.run,
-    #                            name="SummaryExtractor")
-    #     self.process.start()
-
-    # def run(self):
-    #     while True:
-    #         try:
-    #             data = self.extractor_queue.get()
-    #             content, max_sentences = data["content"], data["max_sentences"]
-    #             summary_content = self.engine.summarize(content=content,
-    #                                                     max_num_of_sentences=max_sentences)
-    #             yield summary_content
-    #         except:
-    #             print("Error when summarizing content")

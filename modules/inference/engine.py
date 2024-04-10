@@ -104,12 +104,18 @@ class InferEngine:
         if max_num_of_sentences is None:
             max_num_of_sentences = self.max_sentences
 
+        if max_num_of_sentences == -1:
+            max_num_of_sentences = int(len(sentences) // 3)
+
+        if max_num_of_sentences >= len(sentences):
+            max_num_of_sentences = len(sentences)
+
         if min(word_vectors.shape) == 0:
             return sentences
 
         summary_index = None
         if len(sentences) < max(self.configs.kernel_sizes):
-            summary_index = range(min(len(sentences), self.max_sentences))
+            summary_index = range(len(sentences))
         else:
             # Extract document to get summary index
             sents = torch.from_numpy(word_vectors).to(self.device)
@@ -124,5 +130,6 @@ class InferEngine:
         # Return summary sentence
         summary_sents = sentences
         if summary_index is not None:
-            summary_sents = [sentences[idx].replace("\n", " ") for idx in summary_index]
+            summary_sents = [sentences[idx].replace(
+                "\n", " ") for idx in summary_index]
         return summary_sents

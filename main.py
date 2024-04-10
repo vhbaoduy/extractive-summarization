@@ -43,9 +43,11 @@ def eval_extractor(extractor: torch.nn.Module,
     step_in_epoch = 0
     rouge_metric = configs.reinforce.rouge_metric
     std_rouge = configs.reinforce.std_rouge
+    compute_score = False
     if eval_data == "test":
         rouge_metric = "all"
-        std_rouge = True
+        std_rouge = False
+        compute_score = False
     for step, batch_data in progress_bar:
         for doc in batch_data:
             try:
@@ -53,14 +55,15 @@ def eval_extractor(extractor: torch.nn.Module,
                 step_in_epoch += 1
                 if len(doc.sentences) == 0 or len(doc.tokenized_summary) == 0:
                     continue
-
                 if len(doc.sentences) < max(configs.model.kernel_sizes):
                     summary_index_list = range(min(len(doc.sentences), 3))
 
                     reward = RougeScore.from_summary_index_and_compute_rouge(doc, summary_index_list,
                                                                              std_rouge=std_rouge,
                                                                              rouge_metric=rouge_metric,
-                                                                             max_num_of_bytes=configs.reinforce.length_limit)
+                                                                             max_num_of_bytes=configs.reinforce.length_limit,
+                                                                             path=configs.result_path,
+                                                                             score_flag=compute_score)
                     lead3_r = reward
                 else:
                     # for i in range(1):  # how many times a single data gets updated before proceeding
@@ -74,8 +77,7 @@ def eval_extractor(extractor: torch.nn.Module,
                         continue
                     sents = Variable(torch.from_numpy(x)).to(device)
                     outputs = extractor(sents)
-                    compute_score = (step == len(dataloader.dataset) -
-                                     1) or (configs.reinforce.std_rouge is False)
+
                     if eval_data == "test":
                         reward, lead3_r = ReinforceLoss.get(probs=outputs,
                                                             doc=doc,
@@ -84,7 +86,7 @@ def eval_extractor(extractor: torch.nn.Module,
                                                             max_num_of_bytes=configs.reinforce.length_limit,
                                                             std_rouge=std_rouge,
                                                             path=configs.result_path,
-                                                            score_flag=compute_score,
+                                                            score_flag=True,
                                                             test=True)
                     else:
                         reward, lead3_r = ReinforceLoss.get(probs=outputs,
@@ -250,10 +252,10 @@ if __name__ == "__main__":
                         default='./configs/exp.yaml')
 
     parser.add_argument('--cuda', type=bool, default=True)
-    parser.add_argument('--eval_mode', type=bool, default=False)
+    parser.add_argument('--eval_mode', type=bool, default=True)
     parser.add_argument('--eval_data', type=str, default="valid")
     parser.add_argument('--pretrained_model', type=str,
-                        default=None)
+                        default="data/best_model_2.pt")
 
     args = parser.parse_args()
 
@@ -333,7 +335,7 @@ if __name__ == "__main__":
         if args.eval_data == "test":
             df = pd.read_csv(os.path.join(args.data_dir, "test.csv"))
         else:
-            df = pd.read_csv(os.path.join(args.data_dir, "valid.csv"))
+            df = pd.read_csv(os.path.join(args.data_dir, "test.csv"))
 
         vocab = Vocab(vocab_file_path=args.vocab_file,
                       glove_file_path=args.glove_file,
@@ -344,7 +346,8 @@ if __name__ == "__main__":
         eval_dataset = CNNDailyMailDataset(df=df,
                                            word2id=vocab)
         eval_dataloader = BatchDataLoader(eval_dataset,
-                                          batch_size=1)
+                                          batch_size=1,
+                                          shuffle=False)
 
         logging.info(f"Load model from {args.pretrained_model}")
         device = "cpu"
